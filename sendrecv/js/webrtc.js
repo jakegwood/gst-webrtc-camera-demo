@@ -329,7 +329,12 @@ function websocketServerConnect() {
     } else {
         throw new Error ("Don't know how to connect to the signalling server with uri" + window.location);
     }
-    var ws_url = 'wss://' + ws_server + ':' + ws_port
+    // Derive the signalling scheme from how this page was served: an https
+    // page must use wss:// (mixed-content rules), a plain http:// or file://
+    // page uses ws://. Upstream hardcoded 'wss://', which breaks a plaintext
+    // (no-TLS) deployment served over http.
+    var ws_scheme = window.location.protocol.startsWith('https') ? 'wss://' : 'ws://';
+    var ws_url = ws_scheme + ws_server + ':' + ws_port
     setStatus("Connecting to server " + ws_url);
     ws_conn = new WebSocket(ws_url);
     /* When connected, immediately register with the server */
