@@ -35,6 +35,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # 8443 = signalling (ws://), 8080 = static web client (http)
 EXPOSE 8443 8080
 
+# Unbuffered stdout so `docker logs` shows the sender's output in real time.
+ENV PYTHONUNBUFFERED=1
+
 # All knobs are overridable with -e. SOURCE=--camera streams the USB camera;
 # set SOURCE= (empty) to use the built-in test pattern (for machines with no camera).
 ENV OUR_ID=camera1 \
