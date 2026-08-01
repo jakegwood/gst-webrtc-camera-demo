@@ -20,8 +20,7 @@ sendrecv app, and the JS browser client.
 | `js: support receive-only viewing over plain http` | Default constraints to `{video:false,audio:false}` and skip `getUserMedia` (returning a null stream, guarded in `createCall`). | An IP-camera view captures nothing in the browser. `navigator.mediaDevices` is `undefined` in an insecure (http) context, so the stock code crashes; receive-only sidesteps it and removes any need for TLS. |
 
 Both are general improvements worth sending upstream. The Python sender is **unmodified** from
-upstream — it works as-is once `python3-gst-1.0` is installed (see Prerequisites). See
-`../REVIEW_FINDINGS.md` for the full analysis.
+upstream — it works as-is once `python3-gst-1.0` is installed (see Prerequisites).
 
 ## Prerequisites (on the Pi)
 
