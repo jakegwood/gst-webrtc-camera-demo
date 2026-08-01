@@ -15,13 +15,10 @@ var default_peer_id;
 // Override with your own STUN servers if you want
 var rtc_configuration = {iceServers: [{urls: "stun:stun.l.google.com:19302"}]};
 // The default constraints that will be attempted. Can be overriden by the user.
-var default_constraints = {
-  video: {
-    width: { ideal: 1280 },
-    height: { ideal: 720 }
-  },
-  audio: true
-};
+// Receive-only viewing (an IP-camera live view): the browser captures nothing,
+// so it needs no getUserMedia and therefore no secure context (works over plain
+// http). Set video/audio here to request the browser's own camera/mic instead.
+var default_constraints = {video: false, audio: false};
 
 var connect_attempts = 0;
 var peer_connection = new RTCPeerConnection(rtc_configuration);
@@ -297,11 +294,19 @@ function getLocalStream() {
     }
     console.log(JSON.stringify(constraints));
 
+    // Receive-only: nothing to capture, so skip getUserMedia entirely. This also
+    // avoids the "navigator.mediaDevices is undefined" crash when the page is
+    // served over plain http (mediaDevices is gated to secure contexts).
+    if (!constraints.video && !constraints.audio) {
+        console.log('No local media requested; running receive-only');
+        return Promise.resolve(null);
+    }
     // Add local stream
-    if (navigator.mediaDevices.getUserMedia) {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         return navigator.mediaDevices.getUserMedia(constraints);
     } else {
         errorUserMediaHandler();
+        return Promise.resolve(null);
     }
 }
 
@@ -461,14 +466,16 @@ function createCall(isOfferer) {
         }
     };
 
-    /* Send our video/audio to the other peer */
+    /* Send our video/audio to the other peer (skipped when receive-only) */
     local_stream = getLocalStream().then((stream) => {
-        console.log('Adding local stream');
-        for (const track of stream.getTracks()) {
-            peer_connection.addTrack(track, stream);
+        if (stream) {
+            console.log('Adding local stream');
+            for (const track of stream.getTracks()) {
+                peer_connection.addTrack(track, stream);
+            }
+            var previewElem = getPreviewElement();
+            previewElem.srcObject = stream;
         }
-        var previewElem = getPreviewElement();
-        previewElem.srcObject = stream;
         return stream;
     }).catch(setError);
 
