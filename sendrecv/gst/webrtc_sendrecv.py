@@ -65,11 +65,11 @@ PIPELINE_DESC = {
 }
 VSRC = {
     'test': 'videotestsrc is-live=true pattern=ball',
-    'camera': 'autovideosrc ! video/x-raw,framerate=[25/1,30/1]',
+    'camera': 'v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec',
 }
 ASRC = {
     'test': 'audiotestsrc is-live=true',
-    'camera': 'autoaudiosrc',
+    'camera': 'audiotestsrc is-live=true wave=silence',
 }
 
 
