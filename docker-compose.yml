@@ -1,0 +1,8 @@
+services:
+  webrtc-cam:
+    image: webrtc-cam
+    container_name: webrtc-demo
+    network_mode: host
+    devices:
+      - /dev/video0:/dev/video0
+    restart: unless-stopped
