@@ -11,10 +11,14 @@ import random
 import ssl
 import websockets
 import asyncio
+import logging
 import os
 import sys
 import json
 import argparse
+
+import threading
+from memfault_metrics import MemfaultSession
 
 import gi
 gi.require_version('Gst', '1.0')
@@ -128,6 +132,9 @@ class WebRTCClient:
         # Audio and video source to use
         self.asrc = ASRC[source_type]
         self.vsrc = VSRC[source_type]
+        # Memfault session instrumentation
+        self.session = MemfaultSession()
+        self._stats_task = None
 
     async def send(self, msg):
         assert self.conn
@@ -171,6 +178,7 @@ class WebRTCClient:
         if offer.type == GstWebRTC.WebRTCSDPType.OFFER:
             print_status('Sending offer:\n%s' % text)
             msg = json.dumps({'sdp': {'type': 'offer', 'sdp': text}})
+            self.session.mark('offer_sent')
         elif offer.type == GstWebRTC.WebRTCSDPType.ANSWER:
             print_status('Sending answer:\n%s' % text)
             msg = json.dumps({'sdp': {'type': 'answer', 'sdp': text}})
@@ -184,6 +192,7 @@ class WebRTCClient:
         offer = reply['offer']
         promise = Gst.Promise.new()
         print_status('Offer created, setting local description')
+        self.session.mark('offer_created')
         self.webrtc.emit('set-local-description', offer, promise)
         promise.interrupt()  # we don't care about the result, discard it
         self.send_sdp(offer)
@@ -228,6 +237,89 @@ class WebRTCClient:
             conv.link(resample)
             resample.link(sink)
 
+    def on_ice_connection_state_notify(self, pspec, _):
+        state = self.webrtc.get_property('ice-connection-state')
+        print_status(f'ICE connection state changed to {state}')
+        # GstWebRTC.WebRTCICEConnectionState: CONNECTED=2, COMPLETED=3
+        state_val = int(state)
+        if state_val in (2, 3):
+            self.session.mark('ice_connected')
+
+    def on_connection_state_notify(self, pspec, _):
+        state = self.webrtc.get_property('connection-state')
+        print_status(f'Peer connection state changed to {state}')
+        # GstWebRTC.WebRTCPeerConnectionState: CONNECTED=2
+        state_val = int(state)
+        if state_val == 2:
+            self.session.mark('dtls_connected')
+            self._start_stats_poll()
+        elif state_val in (3, 4, 5):
+            # DISCONNECTED=3, FAILED=4, CLOSED=5
+            self.session.end()
+
+    def _start_stats_poll(self):
+        """Begin polling webrtcbin get-stats via a background thread."""
+        if self._stats_task is not None:
+            return
+        self._stats_stop = threading.Event()
+        self._stats_task = threading.Thread(target=self._stats_poll_thread, daemon=True)
+        self._stats_task.start()
+
+    def _stats_poll_thread(self):
+        """Background thread that polls get-stats."""
+        first_rtp_detected = False
+        while not self._stats_stop.is_set() and self.webrtc is not None:
+            stats = self._get_webrtc_stats()
+            if stats is not None:
+                packets_sent = stats.get('packets-sent', 0)
+                if not first_rtp_detected and packets_sent > 0:
+                    self.session.mark('first_rtp')
+                    self.session.write_ttff_segments()
+                    first_rtp_detected = True
+                self.session.report_periodic_stats(stats)
+            # Poll fast until first RTP detected, then slow to 2s
+            self._stats_stop.wait(0.01 if not first_rtp_detected else 2)
+
+    def _get_webrtc_stats(self):
+        """Synchronously request stats from webrtcbin and parse outbound-rtp."""
+        if self.webrtc is None:
+            return None
+        try:
+            promise = Gst.Promise.new()
+            self.webrtc.emit('get-stats', None, promise)
+            if promise.wait() != Gst.PromiseResult.REPLIED:
+                return None
+            reply = promise.get_reply()
+            if reply is None:
+                return None
+        except Exception:
+            return None
+        result = {}
+        for i in range(reply.n_fields()):
+            name = reply.nth_field_name(i)
+            val = reply.get_value(name)
+            if val is None or not hasattr(val, 'n_fields'):
+                continue
+            # Match on field presence rather than 'type' string, which is
+            # unreliable across GStreamer versions.
+            if val.has_field('bytes-sent') and val.has_field('packets-sent'):
+                # outbound-rtp stats — get_uint64 returns (success, value)
+                for field in ('bytes-sent', 'packets-sent', 'nack-count'):
+                    if val.has_field(field):
+                        ok, v = val.get_uint64(field)
+                        if ok:
+                            result[field] = v
+                if val.has_field('frames-encoded'):
+                    ok, v = val.get_uint64('frames-encoded')
+                    if ok:
+                        result['frames-encoded'] = v
+            elif val.has_field('round-trip-time'):
+                # remote-inbound-rtp stats
+                ok, v = val.get_double('round-trip-time')
+                if ok:
+                    result['round-trip-time'] = v
+        return result if result else None
+
     def on_ice_gathering_state_notify(self, pspec, _):
         state = self.webrtc.get_property('ice-gathering-state')
         print_status(f'ICE gathering state changed to {state}')
@@ -255,6 +347,8 @@ class WebRTCClient:
         self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed, create_offer)
         self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
         self.webrtc.connect('notify::ice-gathering-state', self.on_ice_gathering_state_notify)
+        self.webrtc.connect('notify::ice-connection-state', self.on_ice_connection_state_notify)
+        self.webrtc.connect('notify::connection-state', self.on_connection_state_notify)
         self.webrtc.connect('pad-added', self.on_incoming_stream)
         self.pipe.set_state(Gst.State.PLAYING)
 
@@ -282,6 +376,7 @@ class WebRTCClient:
             sdp = msg['sdp']['sdp']
             if msg['sdp']['type'] == 'answer':
                 print_status('Received answer:\n%s' % sdp)
+                self.session.mark('answer_received')
                 res, sdpmsg = GstSdp.SDPMessage.new_from_text(sdp)
                 answer = GstWebRTC.WebRTCSessionDescription.new(GstWebRTC.WebRTCSDPType.ANSWER, sdpmsg)
                 promise = Gst.Promise.new()
@@ -289,6 +384,7 @@ class WebRTCClient:
                 promise.interrupt()  # we don't care about the result, discard it
             else:
                 print_status('Received offer:\n%s' % sdp)
+                self.session.start()
                 res, sdpmsg = GstSdp.SDPMessage.new_from_text(sdp)
 
                 if not self.webrtc:
@@ -313,6 +409,10 @@ class WebRTCClient:
             print_error('Unknown JSON message')
 
     def close_pipeline(self):
+        self.session.end()
+        if self._stats_task is not None:
+            self._stats_stop.set()
+            self._stats_task = None
         if self.pipe:
             self.pipe.set_state(Gst.State.NULL)
             self.pipe = None
@@ -343,9 +443,11 @@ class WebRTCClient:
                     self.start_pipeline()
             elif message == 'OFFER_REQUEST':
                 print_status('Incoming call: we have been asked to create the offer')
+                self.session.start()
                 self.start_pipeline()
             elif message.startswith('ERROR'):
                 print_error(message)
+                self.session.end()
                 self.close_pipeline()
                 return 1
             else:
@@ -389,6 +491,7 @@ def check_plugin_features(source_type, video_encoding):
 
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO, format='%(name)s: %(message)s')
     Gst.init(None)
     parser = argparse.ArgumentParser()
     parser.add_argument('--video-encoding', default='vp8', nargs='?', choices=['vp8', 'h264', 'av1'],

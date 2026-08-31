@@ -88,3 +88,71 @@ with these disclaimers that's fine; in production you would run `wss://` + auth 
 ## License
 
 Inherited from upstream gst-examples — see `LICENSE`.
+
+## Memfault Session Metrics (optional)
+
+The camera sender includes optional Memfault instrumentation that records per-viewing
+session metrics: a segmented time-to-first-frame (TTFF) breakdown and ongoing streaming
+quality stats. If memfaultd is not installed, the sender works identically — no metrics
+are recorded.
+
+### Setup
+
+1. Install memfaultd on the Pi host (see [Memfault Linux docs](https://docs.memfault.com/docs/linux/introduction)).
+
+2. Add the `live-view` session to `/etc/memfaultd.conf`:
+
+```json
+{
+  "sessions": [
+    {
+      "name": "live-view",
+      "captured_metrics": [
+        "negotiation_setup_ms",
+        "signaling_rtt_ms",
+        "ice_ms",
+        "dtls_ms",
+        "media_start_ms",
+        "ttff_total_ms",
+        "video_bitrate_kbps",
+        "video_framerate",
+        "video_packets_sent",
+        "video_nack_count",
+        "rtt_ms"
+      ]
+    }
+  ]
+}
+```
+
+3. Restart memfaultd:
+
+```bash
+sudo systemctl restart memfaultd
+```
+
+4. Run `./start.sh` — it will detect memfaultd and mount the CLI into the container
+   automatically.
+
+### Metrics recorded
+
+**TTFF segments** (one-time per session, written at session end):
+
+| Metric | Measures |
+|---|---|
+| `negotiation_setup_ms` | Pipeline startup + offer creation |
+| `signaling_rtt_ms` | Signalling path round-trip (offer sent to answer received) |
+| `ice_ms` | NAT traversal (answer received to ICE connected) |
+| `dtls_ms` | DTLS-SRTP handshake (ICE connected to peer connected) |
+| `media_start_ms` | Encoder cold-start (peer connected to first RTP packet) |
+| `ttff_total_ms` | End-to-end (session start to first RTP packet) |
+
+**Streaming quality** (sampled every 2s via StatsD, aggregated by Memfault over the session):
+
+| Metric | Source |
+|---|---|
+| `video_bitrate_kbps` | Outbound video throughput |
+| `video_framerate` | Encoding fps |
+| `video_packets_sent` | Cumulative RTP packets |
+| `video_nack_count` | Retransmission requests |
+| `rtt_ms` | Network round-trip time |
