@@ -156,3 +156,26 @@ sudo systemctl restart memfaultd
 | `video_packets_sent` | Cumulative RTP packets |
 | `video_nack_count` | Retransmission requests |
 | `rtt_ms` | Network round-trip time |
+
+## Network Requirements
+
+This demo is designed for **same-LAN** use: the browser and the Pi must be on the same local
+network. WebRTC media (video/audio) is always peer-to-peer — the signalling server only
+brokers the initial connection setup.
+
+On a LAN, the Pi's host ICE candidates (e.g. `192.168.x.x`) are directly reachable from the
+browser, so connections succeed without any relay infrastructure.
+
+**Remote access** (browser and Pi on different networks) requires a
+[TURN](https://en.wikipedia.org/wiki/Traversal_Using_Relays_around_NAT) relay server to
+forward media through NAT. You can run [coturn](https://github.com/coturn/coturn) on a
+publicly reachable host and configure it in `webrtc_sendrecv.py`:
+
+```python
+WEBRTCBIN = 'webrtcbin name=sendrecv latency=0 \
+ stun-server=stun://stun.l.google.com:19302 \
+ turn-server=turn://user:pass@your-turn-server.example.com:3478'
+```
+
+Without a TURN server, remote connections will fail unless both NATs happen to allow
+direct srflx (STUN) connectivity, which is unreliable.

@@ -96,6 +96,7 @@ function getVideoElement() {
     video_tag.textContent = "Your browser doesn't support video";
     video_tag.autoplay = true;
     video_tag.playsinline = true;
+    video_tag.muted = true;
     div.appendChild(video_tag);
     return video_tag
 }
