@@ -24,13 +24,18 @@ from upstream — everything it needs is already baked into the Docker image.
 
 ## Prerequisites
 
+This demo requires the browser and Pi to be on the **same LAN** — WebRTC media is
+peer-to-peer, and the signalling server only brokers the initial connection setup, so a LAN
+keeps things simple with no relay infrastructure needed.
+
 **On the Pi:**
 - Docker installed.
 - The image built once (see "Running it" below) — there's no registry, so a fresh clone
   needs one `docker build` before `start.sh` works.
 - A USB webcam with [v4l2](https://en.wikipedia.org/wiki/Video4Linux) support, plugged in
   (see below — almost all USB webcams qualify).
-- *(Optional)* `memfaultd` configured — see "Memfault Session Metrics" below.
+- *(Optional, but highly recommended)* `memfaultd` configured — see "Memfault Session
+  Metrics" below.
 
 **On your desktop:**
 - A browser on the same LAN as the Pi (tested with Firefox; any modern browser with WebRTC
@@ -69,7 +74,7 @@ Then, from the Pi:
 
 ```bash
 ./start.sh
-# or: ./start.sh --keep-alive   (see "Keep-alive mode" below)
+# or: ./start.sh --keep-alive   (see "Keep-alive mode" in Additional Info)
 ```
 
 From a browser on another LAN machine, open **one URL** — the fragment pre-fills the peer id
@@ -89,85 +94,12 @@ When you're done:
 ./stop.sh
 ```
 
-### Testing without a Pi or camera
-
-To sanity-check the demo on any machine with Docker, run the image directly (bypassing
-`docker-compose` and the camera device passthrough) to stream a test pattern instead:
-
-```bash
-docker run --rm -p 8080:8080 -p 8443:8443 -e SOURCE= webrtc-cam
-```
-
-Then open `http://localhost:8080/#peer-id=camera1,remote-offerer=1,connect=1` on that same
-machine.
-
-> **Docker Desktop (macOS/Windows) caveat:** the container's ICE candidate is an address
-> inside Docker's Linux VM that a browser on the host can't reach, so media won't connect
-> there. This only reliably works on Linux with `--network=host`, which is what `start.sh`
-> already uses on the Pi.
-
-### Configuration
-
-`start.sh` covers the normal case. For anything else, these env vars (set via `docker run -e`
-or by editing `docker-compose.yml`) control the container:
-
-| Var | Default | Meaning |
-|---|---|---|
-| `OUR_ID` | `camera1` | id the sender registers under (the browser calls this) |
-| `VIDEO_ENCODING` | `vp8` | `vp8`, `h264` (software x264enc), or `av1` |
-| `SOURCE` | `--camera` | `--camera` = USB cam via `autovideosrc`; empty = test pattern |
-| `SIGNALLING_PORT` | `8443` | signalling ws:// port |
-| `HTTP_PORT` | `8080` | static client http port |
-
-## Keep-alive mode
-
-By default the sender builds its GStreamer pipeline when a viewer asks for a stream and
-tears the whole thing down when they leave — and the sender process itself exits between
-viewers, so the next one pays full startup again. Passing `--keep-alive` to `start.sh` sets
-`KEEP_PIPELINE_ALIVE=1` in the container and changes that:
-
-```bash
-./start.sh --keep-alive
-```
-
-Concretely, keep-alive does four things:
-
-1. **The camera stays open.** `v4l2src` holds `/dev/video0` from container start, so the
-   sensor never re-initialises between viewers.
-2. **The encoder stays running.** The source pipeline stays in `PLAYING` permanently (ending
-   in a `tee` that tolerates having no viewer attached), so only `webrtcbin` and one queue
-   are added/removed per session.
-3. **The sender process persists.** It loops internally instead of exiting, so one-time
-   per-process costs (GStreamer registry/plugin load, `webrtcbin` init) are paid once at
-   startup rather than per viewer.
-4. **A keyframe is forced when a viewer attaches**, so they don't wait up to
-   `keyframe-max-dist` frames for a decodable picture from an encoder that's been running
-   the whole time.
-
-**When not to use it.** Keep-alive trades power for latency: the sensor and encoder run
-continuously whether or not anyone is watching, which is fine on a mains-powered camera and
-usually wrong on a battery-powered one. It also holds the camera open permanently, so on
-hardware with an activity LED tied to the sensor, that indicator stays lit. The first viewer
-after a restart doesn't benefit — the savings begin with the second.
-
-## Security
-
-"Plaintext" here means the **signalling** (SDP + ICE over `ws://`) and the **page delivery**
-(`http://`) are unencrypted and unauthenticated. It does **not** mean the video is
-unencrypted: WebRTC media is always DTLS-SRTP encrypted end-to-end — that is mandatory in the
-protocol and cannot be turned off. What's exposed is the signalling channel: on a trusted LAN
-with these disclaimers that's fine; in production you would run `wss://` + auth on signalling.
-
-## License
-
-Inherited from upstream gst-examples — see `LICENSE`.
-
-## Memfault Session Metrics (optional)
+## Memfault Session Metrics (Optional, but highly recommended)
 
 The camera sender includes optional Memfault instrumentation that records per-viewing
 session metrics: a segmented time-to-first-frame (TTFF) breakdown and ongoing streaming
-quality stats. If memfaultd is not installed, the sender works identically — no metrics
-are recorded.
+quality stats. Measuring this is a core part of the point of this demo — if memfaultd is
+not installed, the sender still works identically, but you won't get that visibility.
 
 ### Setup
 
@@ -274,25 +206,68 @@ because cumulative packet counts are MTU-dependent and not actionable on their o
 and because `frames-encoded` / `nack-count` are optional fields this `webrtcbin`
 does not populate — they were silently never recorded.
 
-## Network Requirements
+## Additional Info (Optional)
 
-This demo is designed for **same-LAN** use: the browser and the Pi must be on the same local
-network. WebRTC media (video/audio) is always peer-to-peer — the signalling server only
-brokers the initial connection setup.
+### Configuration
 
-On a LAN, the Pi's host ICE candidates (e.g. `192.168.x.x`) are directly reachable from the
-browser, so connections succeed without any relay infrastructure.
+`start.sh` covers the normal case. For anything else, these env vars (set via `docker run -e`
+or by editing `docker-compose.yml`) control the container:
 
-**Remote access** (browser and Pi on different networks) requires a
-[TURN](https://en.wikipedia.org/wiki/Traversal_Using_Relays_around_NAT) relay server to
-forward media through NAT. You can run [coturn](https://github.com/coturn/coturn) on a
-publicly reachable host and configure it in `webrtc_sendrecv.py`:
+| Var | Default | Meaning |
+|---|---|---|
+| `OUR_ID` | `camera1` | id the sender registers under (the browser calls this) |
+| `VIDEO_ENCODING` | `vp8` | `vp8`, `h264` (software x264enc), or `av1` |
+| `SOURCE` | `--camera` | `--camera` = USB cam via `autovideosrc`; empty = test pattern |
+| `SIGNALLING_PORT` | `8443` | signalling ws:// port |
+| `HTTP_PORT` | `8080` | static client http port |
 
-```python
-WEBRTCBIN = 'webrtcbin name=sendrecv latency=0 \
- stun-server=stun://stun.l.google.com:19302 \
- turn-server=turn://user:pass@your-turn-server.example.com:3478'
+### Keep-alive mode
+
+By default the sender builds its GStreamer pipeline when a viewer asks for a stream and
+tears the whole thing down when they leave — and the sender process itself exits between
+viewers, so the next one pays full startup again. Passing `--keep-alive` to `start.sh` sets
+`KEEP_PIPELINE_ALIVE=1` in the container and changes that:
+
+```bash
+./start.sh --keep-alive
 ```
 
-Without a TURN server, remote connections will fail unless both NATs happen to allow
-direct srflx (STUN) connectivity, which is unreliable.
+Concretely, keep-alive does four things:
+
+1. **The camera stays open.** `v4l2src` holds `/dev/video0` from container start, so the
+   sensor never re-initialises between viewers.
+2. **The encoder stays running.** The source pipeline stays in `PLAYING` permanently (ending
+   in a `tee` that tolerates having no viewer attached), so only `webrtcbin` and one queue
+   are added/removed per session.
+3. **The sender process persists.** It loops internally instead of exiting, so one-time
+   per-process costs (GStreamer registry/plugin load, `webrtcbin` init) are paid once at
+   startup rather than per viewer.
+4. **A keyframe is forced when a viewer attaches**, so they don't wait up to
+   `keyframe-max-dist` frames for a decodable picture from an encoder that's been running
+   the whole time.
+
+**When not to use it.** Keep-alive trades power for latency: the sensor and encoder run
+continuously whether or not anyone is watching, which is fine on a mains-powered camera and
+usually wrong on a battery-powered one. It also holds the camera open permanently, so on
+hardware with an activity LED tied to the sensor, that indicator stays lit. The first viewer
+after a restart doesn't benefit — the savings begin with the second.
+
+### Security
+
+"Plaintext" here means the **signalling** (SDP + ICE over `ws://`) and the **page delivery**
+(`http://`) are unencrypted and unauthenticated. It does **not** mean the video is
+unencrypted: WebRTC media is always DTLS-SRTP encrypted end-to-end — that is mandatory in the
+protocol and cannot be turned off. What's exposed is the signalling channel: on a trusted LAN
+with these disclaimers that's fine; in production you would run `wss://` + auth on signalling.
+
+### Remote Access
+
+This demo only supports same-LAN viewing. Reaching it from a different network would need a
+[TURN](https://en.wikipedia.org/wiki/Traversal_Using_Relays_around_NAT) relay server to
+forward media through NAT — out of scope here, but if you outgrow the LAN case, that's the
+piece to add (e.g. [coturn](https://github.com/coturn/coturn)), configured via the
+`stun-server`/`turn-server` properties on the `webrtcbin` element in `webrtc_sendrecv.py`.
+
+### License
+
+Inherited from upstream gst-examples — see `LICENSE`.
