@@ -22,6 +22,15 @@ sendrecv app, and the JS browser client.
 Both are general improvements worth sending upstream. The Python sender is **unmodified**
 from upstream — everything it needs is already baked into the Docker image.
 
+## System Architecture
+
+![Architecture diagram: browser connects to the Pi via a signalling server, STUN provides reflexive candidates, media flows peer-to-peer, and session metrics go to Memfault Cloud.](docs/architecture.svg)
+
+Numbered labels are the metrics recorded per session (see "Memfault Session Metrics"
+below); solid arrows are the primary direction, dashed arrows are the return path. The
+dashed boundary is the `webrtc-cam` Docker container — `memfaultctl` and the `/dev/video0`
+device node are host-level, mounted into the container rather than running inside it.
+
 ## Prerequisites
 
 This demo requires the browser and Pi to be on the **same LAN** — WebRTC media is

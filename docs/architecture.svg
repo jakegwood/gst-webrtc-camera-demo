@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" role="img" aria-label="WebRTC camera demo architecture: browser connects to Pi via signaling server, STUN provides reflexive candidates, media flows peer-to-peer, metrics go to Memfault cloud.">
+  <defs>
+    <marker id="arr" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0,0 7,2.5 0,5" fill="#1a1a18"/>
+    </marker>
+    <marker id="arr-accent" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0,0 7,2.5 0,5" fill="#2d6a4f"/>
+    </marker>
+    <marker id="arr-highlight" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+      <polygon points="0,0 7,2.5 0,5" fill="#d4a027"/>
+    </marker>
+  </defs>
+
+  <!-- card background, so the diagram stays legible regardless of viewer theme -->
+  <rect x="0" y="0" width="800" height="450" rx="8" fill="#ffffff" stroke="#e8e6e1" stroke-width="1"/>
+
+  <!-- Browser box -->
+  <rect x="30" y="174" width="150" height="110" rx="5" fill="none" stroke="#1a1a18" stroke-width="1.5"/>
+  <text x="105" y="219" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="13" font-weight="600" fill="#1a1a18">Browser</text>
+  <text x="105" y="239" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10" fill="#1a1a18" opacity="0.55">laptop on LAN</text>
+  <text x="105" y="264" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="9" fill="#1a1a18" opacity="0.45">http://:8080</text>
+
+  <!-- Pi outer box -->
+  <rect x="350" y="90" width="420" height="278" rx="5" fill="none" stroke="#1a1a18" stroke-width="1.5"/>
+  <text x="366" y="112" font-family="DM Sans, sans-serif" font-size="13" font-weight="600" fill="#1a1a18">Raspberry Pi</text>
+  <text x="366" y="128" font-family="JetBrains Mono, monospace" font-size="9" fill="#1a1a18" opacity="0.45">rpi3-raspbian.local</text>
+
+  <!-- Docker container boundary (wraps Signaling Server + Camera Sender) -->
+  <rect x="362" y="142" width="396" height="142" rx="4" fill="none" stroke="#1a1a18" stroke-width="1.2" stroke-dasharray="7,4" opacity="0.7"/>
+  <text x="750" y="155" text-anchor="end" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#1a1a18" opacity="0.55">docker: webrtc-cam container</text>
+
+  <!-- Signaling server sub-box -->
+  <rect x="376" y="154" width="170" height="48" rx="3" fill="none" stroke="#1a1a18" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <text x="461" y="174" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#1a1a18">Signaling Server</text>
+  <text x="461" y="190" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#1a1a18" opacity="0.45">ws://:8443</text>
+
+  <!-- Camera sender sub-box -->
+  <rect x="376" y="218" width="368" height="56" rx="3" fill="none" stroke="#1a1a18" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <text x="560" y="240" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#1a1a18">Camera Sender</text>
+  <text x="560" y="258" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#1a1a18" opacity="0.45">webrtcbin + VP8 encoder + v4l2src</text>
+
+  <!-- memfaultctl sub-box (host-level, outside the docker container) -->
+  <rect x="376" y="300" width="170" height="52" rx="3" fill="none" stroke="#1a1a18" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <text x="461" y="322" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#1a1a18">memfaultctl</text>
+  <text x="461" y="340" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#1a1a18" opacity="0.45">write-metrics</text>
+
+  <!-- /dev/video0 sub-box: the v4l2 device node, not the camera itself (that's outside the Pi) -->
+  <rect x="574" y="300" width="170" height="52" rx="3" fill="none" stroke="#1a1a18" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <text x="659" y="322" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#1a1a18">/dev/video0</text>
+  <text x="659" y="340" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#1a1a18" opacity="0.45">v4l2 device node</text>
+
+  <!-- STUN server box -->
+  <rect x="470" y="18" width="180" height="42" rx="5" fill="none" stroke="#1a1a18" stroke-width="1" opacity="0.6"/>
+  <text x="560" y="38" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#1a1a18" opacity="0.7">STUN Server</text>
+  <text x="560" y="52" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#1a1a18" opacity="0.4">stun.l.google.com:19302</text>
+
+  <!-- Memfault Cloud box (external), aligned under memfaultctl -->
+  <rect x="376" y="388" width="170" height="48" rx="5" fill="none" stroke="#1a1a18" stroke-width="1" opacity="0.6"/>
+  <text x="461" y="408" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#1a1a18" opacity="0.7">Memfault Cloud</text>
+  <text x="461" y="424" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#1a1a18" opacity="0.4">device.memfault.com</text>
+
+  <!-- USB Camera box (external, physical device), aligned under /dev/video0 -->
+  <rect x="574" y="388" width="170" height="48" rx="5" fill="none" stroke="#1a1a18" stroke-width="1" opacity="0.6"/>
+  <text x="659" y="408" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="10.5" fill="#1a1a18" opacity="0.7">USB Camera</text>
+  <text x="659" y="424" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="8.5" fill="#1a1a18" opacity="0.4">external device</text>
+
+  <!-- USB Camera → /dev/video0: physical cable -->
+  <line x1="659" y1="388" x2="659" y2="354" stroke="#1a1a18" stroke-width="1.2" marker-end="url(#arr)" opacity="0.6"/>
+  <text x="690" y="381" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="8" fill="#1a1a18" opacity="0.5">USB</text>
+
+  <!-- 1 /dev/video0 → Camera Sender (pipeline init, video capture via v4l2src) -->
+  <line x1="659" y1="300" x2="659" y2="276" stroke="#1a1a18" stroke-width="1.2" marker-end="url(#arr)" opacity="0.6"/>
+  <text x="684" y="290" font-family="DM Sans, sans-serif" font-size="14" font-weight="700" fill="#2d6a4f">1</text>
+
+  <!-- 2 SDP signaling: Camera Sender → Signaling Server → Browser, measured by Camera Sender -->
+  <line x1="430" y1="218" x2="430" y2="202" stroke="#1a1a18" stroke-width="1.2" opacity="0.5"/>
+  <line x1="376" y1="171" x2="180" y2="196" stroke="#1a1a18" stroke-width="1.2" marker-end="url(#arr)"/>
+  <line x1="180" y1="206" x2="376" y2="181" stroke="#1a1a18" stroke-width="1.2" marker-end="url(#arr)" stroke-dasharray="5,3"/>
+  <line x1="450" y1="202" x2="450" y2="218" stroke="#1a1a18" stroke-width="1.2" marker-end="url(#arr)" stroke-dasharray="5,3" opacity="0.5"/>
+  <text x="270" y="160" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="14" font-weight="700" fill="#2d6a4f">2</text>
+  <text x="270" y="147" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="8" fill="#1a1a18" opacity="0.5">SDP offer / answer</text>
+
+  <!-- 3 ICE + STUN binding -->
+  <line x1="560" y1="218" x2="560" y2="62" stroke="#1a1a18" stroke-width="1.2" marker-end="url(#arr)" opacity="0.55"/>
+  <text x="574" y="80" font-family="DM Sans, sans-serif" font-size="14" font-weight="700" fill="#2d6a4f">3</text>
+
+  <!-- 4, 5 DTLS handshake + first RTP (Browser ↔ Camera Sender, direct peer-to-peer) -->
+  <line x1="180" y1="228" x2="347" y2="228" stroke="#2d6a4f" stroke-width="1.5" marker-end="url(#arr-accent)"/>
+  <line x1="347" y1="242" x2="180" y2="242" stroke="#2d6a4f" stroke-width="1.5" marker-end="url(#arr-accent)" stroke-dasharray="5,3"/>
+  <text x="270" y="221" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="14" font-weight="700" fill="#2d6a4f">4</text>
+  <text x="318" y="221" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="14" font-weight="700" fill="#2d6a4f">5</text>
+  <text x="282" y="258" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="8" fill="#1a1a18" opacity="0.5">DTLS-SRTP ↔ RTP media</text>
+
+  <!-- 6 Ongoing streaming stats (same direct path) -->
+  <text x="282" y="274" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="14" font-weight="700" fill="#d4a027">6</text>
+  <text x="282" y="286" text-anchor="middle" font-family="DM Sans, sans-serif" font-size="8" fill="#1a1a18" opacity="0.5">ongoing stats (same path)</text>
+
+  <!-- 7 Session metrics to Memfault cloud -->
+  <line x1="461" y1="352" x2="461" y2="386" stroke="#d4a027" stroke-width="1.2" marker-end="url(#arr-highlight)"/>
+  <text x="475" y="381" font-family="DM Sans, sans-serif" font-size="14" font-weight="700" fill="#d4a027">7</text>
+  <text x="493" y="381" font-family="DM Sans, sans-serif" font-size="8" fill="#1a1a18" opacity="0.5">session metrics</text>
+</svg>
