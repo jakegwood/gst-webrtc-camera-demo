@@ -447,20 +447,40 @@ class WebRTCClient:
             self._stats_task.join(timeout=2)
             self._stats_task = None
 
-        # Stop per-session elements before unlinking
+        # Detach from the tee BEFORE touching element states, and do it from an
+        # IDLE probe so we are not inside a gst_pad_push() when the pad goes away.
+        #
+        # Order matters more than it looks. Setting the queue to NULL while the
+        # tee is still linked to it makes the tee's push return FLUSHING; that is
+        # its only src pad, so FLUSHING propagates upstream and pauses the source
+        # streaming task. The task does not restart when a later viewer adds a new
+        # pad, so the next session negotiates and connects normally but never
+        # receives a single RTP packet.
+        vtee = self.pipe.get_by_name('vtee')
+        tee_pad = self._vtee_pad
+        self._vtee_pad = None
+
+        if vtee is not None and tee_pad is not None:
+            unlinked = threading.Event()
+
+            def _unlink_on_idle(pad, _info):
+                peer = pad.get_peer()
+                if peer is not None:
+                    pad.unlink(peer)
+                vtee.release_request_pad(pad)
+                unlinked.set()
+                return Gst.PadProbeReturn.REMOVE
+
+            tee_pad.add_probe(Gst.PadProbeType.IDLE, _unlink_on_idle)
+            if not unlinked.wait(timeout=2):
+                print_error('Timed out waiting for tee pad to go idle; '
+                            'releasing anyway')
+                vtee.release_request_pad(tee_pad)
+
+        # Now that nothing upstream can push into them, stop and remove.
         for el in (self.webrtc, self._session_vq):
             if el:
                 el.set_state(Gst.State.NULL)
-
-        # Release the tee request pad (safe now that the queue is NULL)
-        vtee = self.pipe.get_by_name('vtee')
-        if vtee and self._vtee_pad:
-            vtee.release_request_pad(self._vtee_pad)
-            self._vtee_pad = None
-
-        # Remove per-session elements from pipeline
-        for el in (self.webrtc, self._session_vq):
-            if el:
                 self.pipe.remove(el)
         self.webrtc = None
         self._session_vq = None

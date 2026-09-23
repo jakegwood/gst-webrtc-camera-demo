@@ -46,7 +46,6 @@ class MemfaultSession:
         self._sock: socket.socket | None = None
         # Previous values for computing deltas in periodic stats
         self._prev_bytes_sent: int | None = None
-        self._prev_frames_encoded: int | None = None
         self._prev_stats_time: float | None = None
 
     # ------------------------------------------------------------------
@@ -93,7 +92,6 @@ class MemfaultSession:
         self._marks.clear()
         self._ttff_written = False
         self._prev_bytes_sent = None
-        self._prev_frames_encoded = None
         self._prev_stats_time = None
         self._marks['t0'] = time.monotonic()
         self._active = self._run('start-session', SESSION_NAME)
@@ -136,29 +134,15 @@ class MemfaultSession:
 
         now = time.monotonic()
         bytes_sent = stats.get('bytes-sent')
-        frames_encoded = stats.get('frames-encoded')
 
         if self._prev_stats_time is not None and bytes_sent is not None:
             dt = now - self._prev_stats_time
-            if dt > 0:
-                if self._prev_bytes_sent is not None:
-                    bitrate_kbps = ((bytes_sent - self._prev_bytes_sent) * 8) / (dt * 1000)
-                    self._send_gauge('video_bitrate_kbps', bitrate_kbps)
-                if frames_encoded is not None and self._prev_frames_encoded is not None:
-                    fps = (frames_encoded - self._prev_frames_encoded) / dt
-                    self._send_gauge('video_framerate', fps)
+            if dt > 0 and self._prev_bytes_sent is not None:
+                bitrate_kbps = ((bytes_sent - self._prev_bytes_sent) * 8) / (dt * 1000)
+                self._send_gauge('video_bitrate_kbps', bitrate_kbps)
 
         self._prev_bytes_sent = bytes_sent
-        self._prev_frames_encoded = frames_encoded
         self._prev_stats_time = now
-
-        packets_sent = stats.get('packets-sent')
-        if packets_sent is not None:
-            self._send_gauge('video_packets_sent', packets_sent)
-
-        nack_count = stats.get('nack-count')
-        if nack_count is not None:
-            self._send_gauge('video_nack_count', nack_count)
 
         rtt = stats.get('round-trip-time')
         if rtt is not None:
