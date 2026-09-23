@@ -115,6 +115,13 @@ class WebRTCSimpleServer(object):
         while True:
             # Receive command, wait forever if necessary
             msg = await self.recv_msg_ping(ws, raddr)
+            # When the other end of a session disconnects, its cleanup_session()
+            # removes *us* from self.peers and closes our socket. We can wake from
+            # recv_msg_ping() after that has happened, so re-check before indexing
+            # rather than raising KeyError out of the handler.
+            if uid not in self.peers:
+                print("Peer {!r} was removed while waiting, closing".format(uid))
+                return
             # Update current status
             peer_status = self.peers[uid][2]
             # We are in a session or a room, messages must be relayed
@@ -214,7 +221,15 @@ class WebRTCSimpleServer(object):
         Exchange hello, register peer
         '''
         raddr = ws.remote_address
-        hello = await ws.recv()
+        try:
+            hello = await ws.recv()
+        except websockets.exceptions.ConnectionClosed:
+            # A browser that reloads or navigates away closes the socket before
+            # completing the handshake (close code 1001, "going away"). That is
+            # ordinary, not a fault: return None so the caller drops the
+            # connection quietly instead of dumping a traceback per page reload.
+            print("Peer at {!r} closed before HELLO".format(raddr))
+            return None
         hello, uid = hello.split(maxsplit=1)
         if hello != 'HELLO':
             await ws.close(code=1002, reason='invalid protocol')
@@ -260,6 +275,9 @@ class WebRTCSimpleServer(object):
             raddr = ws.remote_address
             print("Connected to {!r}".format(raddr))
             peer_id = await self.hello_peer(ws)
+            if peer_id is None:
+                # Closed before HELLO — nothing was registered, nothing to clean up.
+                return
             try:
                 await self.connection_handler(ws, peer_id)
             except websockets.ConnectionClosed:

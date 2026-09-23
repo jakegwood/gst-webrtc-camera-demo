@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import argparse
+import time
 
 import threading
 from memfault_metrics import MemfaultSession
@@ -35,38 +36,76 @@ except ImportError:
     print('gstreamer-python binding overrides aren\'t available, please install them')
     raise
 
+KEEP_ALIVE = os.environ.get('KEEP_PIPELINE_ALIVE', '') == '1'
+
 # These properties all mirror the ones in webrtc-sendrecv.c, see there for explanations
 WEBRTCBIN = 'webrtcbin name=sendrecv latency=0 \
- stun-server=stun://stun.l.google.com:19302 \
- turn-server=turn://gstreamer:IsGreatWhenYouCanGetItToWork@webrtc.nirbheek.in:3478'
+ stun-server=stun://stun.l.google.com:19302'
+# Video only, in both modes. The viewer page is receive-only and the camera has
+# no real mic (audio is audiotestsrc silence), so an audio m-line carries no
+# content. It is also a liability on reconnect: a browser that declines the
+# unwanted audio m-line answers "m=audio 0 / a=inactive", which carries no
+# ice-ufrag, and webrtcbin discards the whole answer over it ("media 1 is
+# missing ... 'ice-ufrag'"), leaving libnice with no remote credentials so every
+# connectivity check is cancelled. One m-line also means one ICE transport
+# instead of two, which is why keep-alive and default stay comparable.
 PIPELINE_DESC_VP8 = WEBRTCBIN + '''
  {vsrc} ! videoconvert ! queue !
   vp8enc deadline=1 keyframe-max-dist=2000 ! rtpvp8pay picture-id-mode=15-bit !
   queue ! application/x-rtp,media=video,encoding-name=VP8,payload={video_pt} ! sendrecv.
- {asrc} ! audioconvert ! audioresample ! queue ! opusenc perfect-timestamp=true ! rtpopuspay !
-  queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload={audio_pt} ! sendrecv.
 '''
 PIPELINE_DESC_H264 = WEBRTCBIN + '''
  {vsrc} ! videoconvert ! queue !
   x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 intra-refresh=true !
   rtph264pay aggregate-mode=zero-latency config-interval=-1 !
   queue ! application/x-rtp,media=video,encoding-name=H264,payload={video_pt} ! sendrecv.
- {asrc} ! audioconvert ! audioresample ! queue ! opusenc perfect-timestamp=true ! rtpopuspay !
-  queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload={audio_pt} ! sendrecv.
 '''
 # Force I420 because dav1d bundled with Chrome doesn't support 10-bit choma/luma (I420_10LE)
 PIPELINE_DESC_AV1 = WEBRTCBIN + '''
  {vsrc} ! videoconvert ! queue !
   video/x-raw,format=I420 ! svtav1enc preset=13 ! av1parse ! rtpav1pay !
   queue ! application/x-rtp,media=video,encoding-name=AV1,payload={video_pt} ! sendrecv.
- {asrc} ! audioconvert ! audioresample ! queue ! opusenc perfect-timestamp=true ! rtpopuspay !
-  queue ! application/x-rtp,media=audio,encoding-name=OPUS,payload={audio_pt} ! sendrecv.
 '''
 PIPELINE_DESC = {
     'AV1': PIPELINE_DESC_AV1,
     'H264': PIPELINE_DESC_H264,
     'VP8': PIPELINE_DESC_VP8,
 }
+
+# Keep-alive mode: persistent source/encoder pipelines ending in a tee.
+# webrtcbin is attached/detached per session without restarting the encoder.
+#
+# Video only, deliberately. The viewer page is receive-only and the camera has
+# no real mic (audio is audiotestsrc silence), so an audio m-line buys nothing.
+# It actively breaks reconnects: browsers reject the unwanted audio m-line with
+# "m=audio 0 / a=inactive", which carries no ice-ufrag, and webrtcbin then
+# discards the whole answer ("media 1 is missing ... 'ice-ufrag'"), leaving
+# libnice with no remote credentials so every connectivity check is cancelled.
+KEEPALIVE_DESC_VP8 = '''
+ {vsrc} ! videoconvert ! queue !
+  vp8enc deadline=1 keyframe-max-dist=2000 ! rtpvp8pay picture-id-mode=15-bit !
+  queue ! application/x-rtp,media=video,encoding-name=VP8,payload=97 !
+  tee name=vtee allow-not-linked=true
+'''
+KEEPALIVE_DESC_H264 = '''
+ {vsrc} ! videoconvert ! queue !
+  x264enc tune=zerolatency speed-preset=ultrafast key-int-max=30 intra-refresh=true !
+  rtph264pay aggregate-mode=zero-latency config-interval=-1 !
+  queue ! application/x-rtp,media=video,encoding-name=H264,payload=97 !
+  tee name=vtee allow-not-linked=true
+'''
+KEEPALIVE_DESC_AV1 = '''
+ {vsrc} ! videoconvert ! queue !
+  video/x-raw,format=I420 ! svtav1enc preset=13 ! av1parse ! rtpav1pay !
+  queue ! application/x-rtp,media=video,encoding-name=AV1,payload=97 !
+  tee name=vtee allow-not-linked=true
+'''
+KEEPALIVE_DESC = {
+    'AV1': KEEPALIVE_DESC_AV1,
+    'H264': KEEPALIVE_DESC_H264,
+    'VP8': KEEPALIVE_DESC_VP8,
+}
+
 VSRC = {
     'test': 'videotestsrc is-live=true pattern=ball',
     'camera': 'v4l2src device=/dev/video0 ! image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec',
@@ -77,8 +116,8 @@ ASRC = {
 }
 
 
-def print_status(msg):
-    print(f'--- {msg}')
+def print_status(msg, flush=False):
+    print(f'--- {msg}', flush=flush)
 
 
 def print_error(msg):
@@ -135,6 +174,13 @@ class WebRTCClient:
         # Memfault session instrumentation
         self.session = MemfaultSession()
         self._stats_task = None
+        # Keep-alive state
+        self.keep_alive = KEEP_ALIVE
+        self._source_running = False
+        self._vtee_pad = None
+        self._atee_pad = None
+        self._session_vq = None
+        self._session_aq = None
 
     async def send(self, msg):
         assert self.conn
@@ -239,22 +285,25 @@ class WebRTCClient:
 
     def on_ice_connection_state_notify(self, pspec, _):
         state = self.webrtc.get_property('ice-connection-state')
-        print_status(f'ICE connection state changed to {state}')
-        # GstWebRTC.WebRTCICEConnectionState: CONNECTED=2, COMPLETED=3
-        state_val = int(state)
-        if state_val in (2, 3):
+        nick = state.value_nick
+        print_status(f'ICE connection state: {nick}', flush=True)
+        if nick in ('connected', 'completed'):
             self.session.mark('ice_connected')
 
     def on_connection_state_notify(self, pspec, _):
         state = self.webrtc.get_property('connection-state')
-        print_status(f'Peer connection state changed to {state}')
-        # GstWebRTC.WebRTCPeerConnectionState: CONNECTED=2
-        state_val = int(state)
-        if state_val == 2:
+        nick = state.value_nick
+        print_status(f'Peer connection state: {nick}', flush=True)
+        if nick == 'connected':
             self.session.mark('dtls_connected')
             self._start_stats_poll()
-        elif state_val in (3, 4, 5):
-            # DISCONNECTED=3, FAILED=4, CLOSED=5
+        elif nick == 'failed':
+            print_error('WebRTC connection failed, closing')
+            self.session.end()
+            # Close websocket to exit the main loop and trigger cleanup
+            if self.conn:
+                asyncio.run_coroutine_threadsafe(self.conn.close(), self.event_loop)
+        elif nick in ('disconnected', 'closed'):
             self.session.end()
 
     def _start_stats_poll(self):
@@ -334,7 +383,118 @@ class WebRTCClient:
         decodebin.sync_state_with_parent()
         pad.link(decodebin.get_static_pad('sink'))
 
+    # ------------------------------------------------------------------
+    # Keep-alive pipeline management
+    # ------------------------------------------------------------------
+
+    def start_source_pipeline(self):
+        """Create the persistent source/encoder pipeline (keep-alive mode)."""
+        desc = KEEPALIVE_DESC[self.video_encoding].format(vsrc=self.vsrc, asrc=self.asrc)
+        self.pipe = Gst.parse_launch(desc)
+        bus = self.pipe.get_bus()
+        self.event_loop.add_reader(bus.get_pollfd().fd, self.on_bus_poll_cb, bus)
+        self.pipe.set_state(Gst.State.PLAYING)
+        self._source_running = True
+        print_status('Source pipeline started (keep-alive mode)', flush=True)
+
+    def _attach_webrtcbin(self, create_offer=True):
+        """Create a webrtcbin and link it to the running source pipeline."""
+        print_status(f'Attaching webrtcbin (keep-alive), create_offer: {create_offer}', flush=True)
+        self.webrtc = Gst.ElementFactory.make('webrtcbin', 'sendrecv')
+        self.webrtc.set_property('latency', 0)
+        self.webrtc.set_property('stun-server', 'stun://stun.l.google.com:19302')
+
+        self._session_vq = Gst.ElementFactory.make('queue', 'session_vq')
+
+        self.pipe.add(self.webrtc, self._session_vq)
+
+        self.webrtc.connect('on-negotiation-needed', self.on_negotiation_needed, False)
+        self.webrtc.connect('on-ice-candidate', self.send_ice_candidate_message)
+        self.webrtc.connect('notify::ice-gathering-state', self.on_ice_gathering_state_notify)
+        self.webrtc.connect('notify::ice-connection-state', self.on_ice_connection_state_notify)
+        self.webrtc.connect('notify::connection-state', self.on_connection_state_notify)
+        self.webrtc.connect('pad-added', self.on_incoming_stream)
+
+        vtee = self.pipe.get_by_name('vtee')
+        self._vtee_pad = vtee.request_pad_simple('src_%u')
+        self._vtee_pad.link(self._session_vq.get_static_pad('sink'))
+        self._session_vq.get_static_pad('src').link(
+            self.webrtc.request_pad_simple('sink_%u'))
+
+        self._session_vq.sync_state_with_parent()
+        self.webrtc.sync_state_with_parent()
+
+        # The encoder has been running since startup, so the next frame is very
+        # likely a delta frame the new viewer cannot decode. Ask for a keyframe
+        # now rather than waiting for keyframe-max-dist or the viewer's PLI.
+        self._vtee_pad.send_event(Gst.Event.new_custom(
+            Gst.EventType.CUSTOM_UPSTREAM,
+            Gst.Structure.new_from_string(
+                'GstForceKeyUnit, all-headers=(boolean)true')))
+
+        if create_offer:
+            # on-negotiation-needed doesn't fire reliably on a dynamically
+            # added webrtcbin — explicitly create the offer after state sync.
+            self.webrtc.get_state(Gst.SECOND)
+            print_status('Creating offer (keep-alive attach)')
+            promise = Gst.Promise.new_with_change_func(self.on_offer_created, None, None)
+            self.webrtc.emit('create-offer', None, promise)
+
+    def _detach_webrtcbin(self):
+        """Remove webrtcbin and per-session elements, keep source pipeline."""
+        if self._stats_task is not None:
+            self._stats_stop.set()
+            self._stats_task.join(timeout=2)
+            self._stats_task = None
+
+        # Detach from the tee BEFORE touching element states, and do it from an
+        # IDLE probe so we are not inside a gst_pad_push() when the pad goes away.
+        #
+        # Order matters more than it looks. Setting the queue to NULL while the
+        # tee is still linked to it makes the tee's push return FLUSHING; that is
+        # its only src pad, so FLUSHING propagates upstream and pauses the source
+        # streaming task. The task does not restart when a later viewer adds a new
+        # pad, so the next session negotiates and connects normally but never
+        # receives a single RTP packet.
+        vtee = self.pipe.get_by_name('vtee')
+        tee_pad = self._vtee_pad
+        self._vtee_pad = None
+
+        if vtee is not None and tee_pad is not None:
+            unlinked = threading.Event()
+
+            def _unlink_on_idle(pad, _info):
+                peer = pad.get_peer()
+                if peer is not None:
+                    pad.unlink(peer)
+                vtee.release_request_pad(pad)
+                unlinked.set()
+                return Gst.PadProbeReturn.REMOVE
+
+            tee_pad.add_probe(Gst.PadProbeType.IDLE, _unlink_on_idle)
+            if not unlinked.wait(timeout=2):
+                print_error('Timed out waiting for tee pad to go idle; '
+                            'releasing anyway')
+                vtee.release_request_pad(tee_pad)
+
+        # Now that nothing upstream can push into them, stop and remove.
+        for el in (self.webrtc, self._session_vq):
+            if el:
+                el.set_state(Gst.State.NULL)
+                self.pipe.remove(el)
+        self.webrtc = None
+        self._session_vq = None
+
+        print_status('Detached webrtcbin (source pipeline still running)', flush=True)
+
+    # ------------------------------------------------------------------
+    # Pipeline start / stop (branches on keep-alive)
+    # ------------------------------------------------------------------
+
     def start_pipeline(self, create_offer=True, audio_pt=96, video_pt=97):
+        if self.keep_alive and self._source_running:
+            self._attach_webrtcbin(create_offer)
+            return
         print_status(f'Creating pipeline, create_offer: {create_offer}')
         desc = PIPELINE_DESC[self.video_encoding].format(video_pt=video_pt,
                                                          audio_pt=audio_pt,
@@ -410,6 +570,9 @@ class WebRTCClient:
 
     def close_pipeline(self):
         self.session.end()
+        if self.keep_alive and self._source_running:
+            self._detach_webrtcbin()
+            return
         if self._stats_task is not None:
             self._stats_stop.set()
             self._stats_task = None
@@ -514,6 +677,19 @@ if __name__ == '__main__':
         sys.exit(1)
     loop = asyncio.new_event_loop()
     c = WebRTCClient(loop, args.our_id, args.peer_id, args.server, args.remote_is_offerer, args.video_encoding, args.source_type)
-    loop.run_until_complete(c.connect())
-    res = loop.run_until_complete(c.loop())
-    sys.exit(res)
+
+    if KEEP_ALIVE:
+        print_status('Keep-alive mode enabled', flush=True)
+        c.start_source_pipeline()
+        while True:
+            try:
+                loop.run_until_complete(c.connect())
+                res = loop.run_until_complete(c.loop())
+            except Exception as e:
+                print_error(f'Session error: {e}')
+            print_status('Session ended, reconnecting in 2s... (keep-alive)', flush=True)
+            time.sleep(2)
+    else:
+        loop.run_until_complete(c.connect())
+        res = loop.run_until_complete(c.loop())
+        sys.exit(res)

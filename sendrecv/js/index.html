@@ -36,9 +36,11 @@
             el.dispatchEvent(new Event('change'));
           } else if (id === 'peer-id') {
             document.getElementById('peer-connect').value = val;
-          } else if (id === 'connect' && val === '1') {
-            window.setTimeout(onConnectClicked, 2000);
           }
+          // No auto-connect. Starting the stream is always an explicit click on
+          // Connect: the old '#connect=1' handler fired onConnectClicked() on a
+          // blind 2s timer, which could run before the signalling socket was
+          // open or before the peer id was filled in.
         });
       });
     </script>
