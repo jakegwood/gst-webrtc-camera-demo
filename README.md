@@ -187,14 +187,14 @@ no-op behaviour, not a failure.
 
 **TTFF segments** (one-time per session, written at session end):
 
-| Metric | Measures |
-|---|---|
-| `negotiation_setup_ms` | Pipeline startup + offer creation (t0 to offer created) |
-| `signaling_rtt_ms` | Signalling path round-trip (offer sent to answer received) |
-| `ice_ms` | NAT traversal (answer received to ICE connected) |
-| `dtls_ms` | DTLS-SRTP handshake (ICE connected to peer connected) |
-| `media_start_ms` | First outbound RTP observed (peer connected to first RTP packet) |
-| `ttff_total_ms` | Device-side total (t0 to first RTP packet sent) |
+| Metric | Measures | Number in Diagram |
+|---|---|---|
+| `negotiation_setup_ms` | Pipeline startup + offer creation (t0 to offer created) | 1 |
+| `signaling_rtt_ms` | Signalling path round-trip (offer sent to answer received) | 2 |
+| `ice_ms` | NAT traversal (answer received to ICE connected) | 3 |
+| `dtls_ms` | DTLS-SRTP handshake (ICE connected to peer connected) | 4 |
+| `media_start_ms` | First outbound RTP observed (peer connected to first RTP packet) | 5 |
+| `ttff_total_ms` | Device-side total (t0 to first RTP packet sent) | 1–5 |
 
 `t0` is set when the sender receives `OFFER_REQUEST` from the signalling server —
 the moment the camera is asked to begin a viewing session. Everything before that
@@ -204,10 +204,10 @@ viewer's jitter buffer, decode and render).
 
 **Streaming quality** (sampled every 2s via StatsD, aggregated by Memfault over the session):
 
-| Metric | Source |
-|---|---|
-| `video_bitrate_kbps` | Outbound video throughput |
-| `rtt_ms` | Network round-trip time from RTCP receiver reports |
+| Metric | Source | Number in Diagram |
+|---|---|---|
+| `video_bitrate_kbps` | Outbound video throughput | 6 |
+| `rtt_ms` | Network round-trip time from RTCP receiver reports | 6 |
 
 The sender deliberately emits only these two. Earlier revisions also sent
 `video_framerate`, `video_packets_sent` and `video_nack_count`; they were dropped
