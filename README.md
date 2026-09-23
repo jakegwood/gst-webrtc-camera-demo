@@ -19,56 +19,61 @@ sendrecv app, and the JS browser client.
 | `js: derive websocket scheme from page protocol` | Build the signalling URL as `ws://` for an http page, `wss://` for https, instead of hardcoding `wss://`. | Upstream hardcodes `wss://`, so a plaintext http deployment can't connect. |
 | `js: support receive-only viewing over plain http` | Default constraints to `{video:false,audio:false}` and skip `getUserMedia` (returning a null stream, guarded in `createCall`). | An IP-camera view captures nothing in the browser. `navigator.mediaDevices` is `undefined` in an insecure (http) context, so the stock code crashes; receive-only sidesteps it and removes any need for TLS. |
 
-Both are general improvements worth sending upstream. The Python sender is **unmodified** from
-upstream — it works as-is once `python3-gst-1.0` is installed (see Prerequisites).
+Both are general improvements worth sending upstream. The Python sender is **unmodified**
+from upstream — everything it needs is already baked into the Docker image.
 
-## Prerequisites (on the Pi)
+## Prerequisites
 
-The stack depends on a specific set of GStreamer + Python packages. On a clean Raspberry Pi OS
-(Debian 13 / trixie, 64-bit) install:
+**On the Pi:**
+- Docker installed.
+- The image built once (see "Running it" below) — there's no registry, so a fresh clone
+  needs one `docker build` before `start.sh` works.
+- A USB webcam with [v4l2](https://en.wikipedia.org/wiki/Video4Linux) support, plugged in
+  (see below — almost all USB webcams qualify).
+- *(Optional)* `memfaultd` configured — see "Memfault Session Metrics" below.
 
-```bash
-sudo apt update
-sudo apt install \
-  gstreamer1.0-tools \
-  gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad \
-  gstreamer1.0-nice \
-  libnice10 \
-  v4l-utils \
-  python3-gi \
-  python3-gst-1.0 \
-  gir1.2-gstreamer-1.0 \
-  gir1.2-gst-plugins-base-1.0 \
-  gir1.2-gst-plugins-bad-1.0 \
-  python3-websockets
-```
+**On your desktop:**
+- A browser on the same LAN as the Pi (tested with Firefox; any modern browser with WebRTC
+  support should work).
 
-Notes:
-- **`python3-gst-1.0` is easy to miss and required** — the sender does `from gi.overrides
-  import Gst` and will abort with "gstreamer-python binding overrides aren't available" without
-  it. (It also provides the `Gst.Structure` subscripting the app uses.)
-- **No virtualenv is needed.** The signalling server runs on the distro's `python3-websockets`
-  (15.x) directly.
-- These are the versions this was verified against: gstreamer 1.26.2, python3-gi 3.50.0,
-  python3-websockets 15.0.1, on Python 3.13.
+### Checking your webcam supports v4l2
 
-## Running it (all on the Pi)
+Almost all USB webcams do. To confirm on the Pi:
 
 ```bash
-# 1. Signalling server (plaintext ws://, port 8443)
-python3 signalling/simple_server.py --disable-ssl
-
-# 2. Static file server for the browser client (port 8080)
-python3 -m http.server 8080 -d sendrecv/js
-
-# 3. Camera sender: registers as "camera1" and waits for the browser to call it
-python3 sendrecv/gst/webrtc_sendrecv.py \
-    --server ws://127.0.0.1:8443 --our-id camera1 --camera --video-encoding vp8
+sudo apt install v4l-utils   # if not already installed
+v4l2-ctl --list-devices
 ```
 
-Then, from a browser on another LAN machine, open **one URL** — the fragment pre-fills the
-peer id and ticks "remote offerer" (so the Pi sends the offer with its camera):
+You should see your camera listed with one or more `/dev/videoN` nodes underneath it (a
+single camera commonly exposes more than one — `/dev/video0` is usually the capture node).
+Then confirm it offers a usable capture format:
+
+```bash
+v4l2-ctl -d /dev/video0 --list-formats-ext
+```
+
+Look for `MJPG` or `YUYV` in the output — either works with this demo. If the camera doesn't
+show up in `--list-devices` at all, it isn't v4l2-compatible (rare for USB webcams) or isn't
+plugged in.
+
+## Running it
+
+Build the image once (skip if you've already done this):
+
+```bash
+docker build -t webrtc-cam .
+```
+
+Then, from the Pi:
+
+```bash
+./start.sh
+# or: ./start.sh --keep-alive   (see "Keep-alive mode" below)
+```
+
+From a browser on another LAN machine, open **one URL** — the fragment pre-fills the peer id
+and ticks "remote offerer" (so the Pi sends the offer with its camera):
 
 ```
 http://<pi-hostname-or-ip>:8080/#peer-id=camera1,remote-offerer=1
@@ -76,18 +81,50 @@ http://<pi-hostname-or-ip>:8080/#peer-id=camera1,remote-offerer=1
 
 Click **Connect** and the camera feed should appear. (Manual equivalent: open
 `http://<pi>:8080/`, type `camera1` in "Enter peer id", tick **Remote offerer**, click
-**Connect**.)
+**Connect**.) Starting the stream is always an explicit click — nothing auto-connects.
 
-Starting the stream is always an explicit click. An earlier revision accepted
-`connect=1` in the fragment and clicked for you on a 2s timer, which could fire before
-the signalling socket was open; that was removed.
+When you're done:
+
+```bash
+./stop.sh
+```
+
+### Testing without a Pi or camera
+
+To sanity-check the demo on any machine with Docker, run the image directly (bypassing
+`docker-compose` and the camera device passthrough) to stream a test pattern instead:
+
+```bash
+docker run --rm -p 8080:8080 -p 8443:8443 -e SOURCE= webrtc-cam
+```
+
+Then open `http://localhost:8080/#peer-id=camera1,remote-offerer=1,connect=1` on that same
+machine.
+
+> **Docker Desktop (macOS/Windows) caveat:** the container's ICE candidate is an address
+> inside Docker's Linux VM that a browser on the host can't reach, so media won't connect
+> there. This only reliably works on Linux with `--network=host`, which is what `start.sh`
+> already uses on the Pi.
+
+### Configuration
+
+`start.sh` covers the normal case. For anything else, these env vars (set via `docker run -e`
+or by editing `docker-compose.yml`) control the container:
+
+| Var | Default | Meaning |
+|---|---|---|
+| `OUR_ID` | `camera1` | id the sender registers under (the browser calls this) |
+| `VIDEO_ENCODING` | `vp8` | `vp8`, `h264` (software x264enc), or `av1` |
+| `SOURCE` | `--camera` | `--camera` = USB cam via `autovideosrc`; empty = test pattern |
+| `SIGNALLING_PORT` | `8443` | signalling ws:// port |
+| `HTTP_PORT` | `8080` | static client http port |
 
 ## Keep-alive mode
 
 By default the sender builds its GStreamer pipeline when a viewer asks for a stream and
 tears the whole thing down when they leave — and the sender process itself exits between
-viewers, so the next one pays full startup again. Passing `--keep-alive` to `start.sh`
-sets `KEEP_PIPELINE_ALIVE=1` in the container and changes that:
+viewers, so the next one pays full startup again. Passing `--keep-alive` to `start.sh` sets
+`KEEP_PIPELINE_ALIVE=1` in the container and changes that:
 
 ```bash
 ./start.sh --keep-alive
@@ -97,27 +134,21 @@ Concretely, keep-alive does four things:
 
 1. **The camera stays open.** `v4l2src` holds `/dev/video0` from container start, so the
    sensor never re-initialises between viewers.
-2. **The encoder stays running.** The whole source pipeline
-   (`v4l2src → jpegdec → videoconvert → vp8enc → rtpvp8pay → tee`) stays in `PLAYING`
-   permanently, ending in a `tee` with `allow-not-linked=true` so it keeps running with no
-   viewer attached. Only `webrtcbin` and one queue are added and removed per session.
+2. **The encoder stays running.** The source pipeline stays in `PLAYING` permanently (ending
+   in a `tee` that tolerates having no viewer attached), so only `webrtcbin` and one queue
+   are added/removed per session.
 3. **The sender process persists.** It loops internally instead of exiting, so one-time
-   per-process costs — GStreamer registry and plugin load, and whatever `webrtcbin`
-   initialises on its first use — are paid once at startup rather than per viewer.
-4. **A keyframe is forced when a viewer attaches.** Because the encoder has been running,
-   the next frame is almost certainly a delta frame the new viewer cannot decode, so
-   attaching sends an upstream `GstForceKeyUnit`. Without this a viewer could wait up to
-   `keyframe-max-dist` frames for a decodable picture.
+   per-process costs (GStreamer registry/plugin load, `webrtcbin` init) are paid once at
+   startup rather than per viewer.
+4. **A keyframe is forced when a viewer attaches**, so they don't wait up to
+   `keyframe-max-dist` frames for a decodable picture from an encoder that's been running
+   the whole time.
 
-One mechanism detail worth knowing if you read the code: `on-negotiation-needed` does not
-fire reliably for a `webrtcbin` added to an already-running pipeline, so the keep-alive
-path emits `create-offer` explicitly once the element reaches `PLAYING`.
-
-**When not to use it.** Keep-alive trades power for latency. The sensor and encoder run
-continuously whether or not anyone is watching, which is reasonable on a mains-powered
-camera and usually wrong on a battery-powered one. It also holds the camera open
-permanently, so on hardware with a activity LED tied to the sensor, that indicator stays
-lit. The first viewer after a restart does not benefit — the savings begin with the second.
+**When not to use it.** Keep-alive trades power for latency: the sensor and encoder run
+continuously whether or not anyone is watching, which is fine on a mains-powered camera and
+usually wrong on a battery-powered one. It also holds the camera open permanently, so on
+hardware with an activity LED tied to the sensor, that indicator stays lit. The first viewer
+after a restart doesn't benefit — the savings begin with the second.
 
 ## Security
 

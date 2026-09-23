@@ -3,7 +3,7 @@
 # This image contains ONLY the WebRTC services (signalling server, Python
 # sendrecv camera app, static JS client). It deliberately does NOT contain
 # memfaultd: memfaultd is a host-level device daemon and must run natively on
-# the device (see DOCKER.md, "Tier 2"). On a device, run this image with
+# the device (see README.md). On a device, run this image with
 # --network=host so the app can reach the host's memfaultd StatsD socket.
 FROM debian:trixie-slim
 
