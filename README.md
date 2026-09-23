@@ -215,6 +215,9 @@ because cumulative packet counts are MTU-dependent and not actionable on their o
 and because `frames-encoded` / `nack-count` are optional fields this `webrtcbin`
 does not populate — they were silently never recorded.
 
+**7** in the diagram isn't a metric of its own — it's `memfaultctl` writing the whole
+`live-view` session (every metric above, start to end) to Memfault Cloud.
+
 ## Additional Info (Optional)
 
 ### Configuration
